@@ -1,0 +1,74 @@
+
+name: BUILD SAMPLE FLIP VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Download Project
+        uses: actions/checkout@v4
+
+      - name: Find and Fix Project
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Recurse -Filter CMakeLists.txt -File |
+            Where-Object { $_.FullName -notmatch '[\\/](build|\.git)[\\/]' })
+
+          if ($files.Count -eq 0) {
+            throw "CMakeLists.txt not found. Upload the project source first."
+          }
+
+          if ($files.Count -ne 1) {
+            throw "Multiple CMake projects found."
+          }
+
+          $src = $files[0].DirectoryName
+          "SOURCE_DIR=$src" >> $env:GITHUB_ENV
+
+          $cmake = Join-Path $src "CMakeLists.txt"
+          $content = Get-Content $cmake -Raw
+
+          if ($content -notmatch 'juce_generate_juce_header\s*\(\s*SampleFlip\s*\)') {
+            $content += "`njuce_generate_juce_header(SampleFlip)`n"
+            Set-Content $cmake $content
+          }
+
+          Write-Host "Project found at $src"
+
+      - name: Configure VST3
+        shell: pwsh
+        run: |
+          cmake -S "$env:SOURCE_DIR" -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Compile Windows VST3
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target SampleFlip_VST3 --parallel 4
+
+      - name: Package Plugin
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          $plugins = @(Get-ChildItem build -Recurse -Directory -Filter "*.vst3")
+
+          if ($plugins.Count -eq 0) {
+            throw "VST3 was not generated."
+          }
+
+          foreach ($plugin in $plugins) {
+            Copy-Item $plugin.FullName dist -Recurse -Force
+          }
+
+      - name: Upload Finished Plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAMPLE-FLIP-WINDOWS-VST3
+          path: dist/
+          if-no-files-found: error
